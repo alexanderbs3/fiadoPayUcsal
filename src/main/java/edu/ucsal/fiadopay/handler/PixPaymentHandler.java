@@ -6,7 +6,7 @@ import edu.ucsal.fiadopay.dto.request.PaymentRequest;
 import org.springframework.stereotype.Service;
 
 @Service
-@PaymenrMethod("PIX")
+@PaymentMethod("PIX")
 
 public class PixPaymentHandler implements PaymentHandler{
     @Override

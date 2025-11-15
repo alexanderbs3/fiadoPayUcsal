@@ -22,11 +22,10 @@ public class CardPaymentHandler implements PaymentHandler {
             var factor = base.pow(req.installments());
             var total = req.amount().multiply(factor)
                     .setScale(2, RoundingMode.HALF_UP);
-            payment.setMonthlyInterest(monthlyInterest:1.0);
+            payment.setMonthlyInterest(1.0);
             payment.setTotalWithInterest(total);
         } else {
-            payment.setTotalWhithInterest(req.amount());
-
+            payment.setTotalWithInterest(req.amount());
         }
         return payment;
     }
