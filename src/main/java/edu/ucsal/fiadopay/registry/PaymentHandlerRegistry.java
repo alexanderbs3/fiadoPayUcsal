@@ -5,7 +5,7 @@ import edu.ucsal.fiadopay.annotations.PaymentMethod;
 import edu.ucsal.fiadopay.handler.AntiFraudRule;
 import edu.ucsal.fiadopay.handler.PaymentHandler;
 import jakarta.annotation.PostConstruct;
-import org.apache.catalina.core.ApplicationContext;
+import org.springframework.context.ApplicationContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -25,7 +25,7 @@ private ApplicationContext ctx;
 
 @PostConstruct
  public void init(){
-   ext.getBeansOfType(PaymentHandler.class).values().forEach(handler ->{
+   ctx.getBeansOfType(PaymentHandler.class).values().forEach(handler ->{
        PaymentMethod ann = handler.getClass().getAnnotation(PaymentMethod.class);
       if (ann != null){
           handlers.put(ann.value().toUpperCase(), handler);
@@ -41,10 +41,12 @@ ctx.getBeansOfType(AntiFraudRule.class).values().forEach(rule ->{
 }
 
 public PaymentHandler gatHandler(String method){
+
     return handlers.get(method.toUpperCase());
 }
 
 public List<AntiFraudRule> getFraudRules() {
+
     return fraudRules;
 }
 }
