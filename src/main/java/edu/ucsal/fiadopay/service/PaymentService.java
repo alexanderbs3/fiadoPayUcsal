@@ -1,12 +1,11 @@
 package edu.ucsal.fiadopay.service;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
-import edu.ucsal.fiadopay.annotations.AntiFraud;
 import edu.ucsal.fiadopay.domain.Merchant;
 import edu.ucsal.fiadopay.domain.Payment;
 import edu.ucsal.fiadopay.domain.WebhookDelivery;
 import edu.ucsal.fiadopay.dto.request.PaymentRequest;
 import edu.ucsal.fiadopay.dto.response.PaymentResponse;
-import edu.ucsal.fiadopay.handler.AntiFraudRule;
 import edu.ucsal.fiadopay.handler.PaymentHandler;
 import edu.ucsal.fiadopay.registry.PaymentHandlerRegistry;
 import edu.ucsal.fiadopay.repo.MerchantRepository;
@@ -19,6 +18,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -29,64 +29,68 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 
-
 @Service
 @RequiredArgsConstructor
 public class PaymentService {
 
-    private final
-    MerchantRepository merchants;
+    // ==== REPOSITÓRIOS ====
+    private final MerchantRepository merchants;
     private final PaymentRepository payments;
-    private final
-    WebhookDeliveryRepository deliveries;
+    private final WebhookDeliveryRepository deliveries;
 
-    private final
-    PaymentHandlerRegistry registry;
+    // ==== REGISTRY DE HANDLERS (anotações + reflexão) ====
+    private final PaymentHandlerRegistry registry;
 
+    // ==== THREAD POOLS (nomeados) ====
     private final ExecutorService paymentExecutor;
     private final ExecutorService webhookExecutor;
 
+    // ==== JACKSON ====
     private final ObjectMapper objectMapper;
 
-    @Value"${fiadopay.webhook-secret}")
+    // ==== CONFIGURAÇÕES VIA application.yml ====
+    @Value("${fiadopay.webhook-secret}")
     private String webhookSecret;
 
-
     @Value("${fiadopay.processing-delay-ms}")
-    private long processingDelayMS;
+    private long processingDelayMs;
 
     @Value("${fiadopay.failure-rate}")
     private double failureRate;
 
+    // 1. CRIAÇÃO DE PAGAMENTO (endpoint POST /payments)
     @Transactional
-    public PaymentResponse
-    createPayment(String authHeader,
+    public PaymentResponse createPayment(String authHeader,
+                                         String idempotencyKey,
+                                         PaymentRequest req) {
 
-                  String idempotencyKey,
+        Merchant merchant = merchantFromAuth(authHeader);
+        Long merchantId = merchant.getId();
 
-                  PaymentRequest req) {
-
-        Merchant merchant =
-                merchantFromAuth
-                        (authHeader);
-        Long merchantId merchant.getId();
-
+        // ---- IDEMPOTÊNCIA ----
         if (idempotencyKey != null) {
-            var existing = payments.findByIdempotencyKeyAndMerchantId
-                    (idempotencyKey, merchantId);
-
+            var existing = payments.findByIdempotencyKeyAndMerchantId(idempotencyKey, merchantId);
             if (existing.isPresent()) {
-                return to Response(existing.get());
-
+                return toResponse(existing.get());
             }
         }
 
-        Payment payment = Payment.builder().id ("pay_" + UUID.rANDOMuuid().tostring().substring(beginIndex:0,endIndex:8)).
-        () -> merchantId(merchantId)
-                .method(req.method().toUpperCase()).amount(req.amount())
-        () -> () -> currency(req.currency()).installments(req.installments() == null ? 1 : req.installments()).status(Payment.Status.PENDING)
-.createdAt(Instant.now()).updatedAt(Instant.now()).idempotencyKey(idempotencyKey).medadataOrderId(req.metadataOrderId()).build();
+        // ---- CRIA ENTIDADE BASE ----
+        Payment payment = Payment.builder()
+                .id("pay_" + UUID.randomUUID().toString().substring(0, 8))
+                .merchantId(merchantId)
+                .method(req.method().toUpperCase())
+                .amount(req.amount())
+                .currency(req.currency())
+                .installments(req.installments() == null ? 1 : req.installments())
+                .status(Payment.Status.PENDING)
+                .createdAt(Instant.now())
+                .updatedAt(Instant.now())
+                .idempotencyKey(idempotencyKey)
+                .metadataOrderId(req.metadataOrderId())
+                .build();
 
+        // ---- APLICA REGRAS ESPECÍFICAS DO MÉTODO (juros, etc.) ----
         PaymentHandler handler = registry.getHandler(req.method());
         if (handler != null) {
             handler.process(payment, req);
@@ -96,17 +100,20 @@ public class PaymentService {
 
         payments.save(payment);
 
+        // ---- PROCESSAMENTO ASSÍNCRONO (simula aprovação/recusa) ----
         paymentExecutor.execute(() -> processAsync(payment));
 
         return toResponse(payment);
     }
 
+    // 2. PROCESSAMENTO ASSÍNCRONO (delay + antifraude + webhook)
     private void processAsync(Payment payment) {
         sleepSilently(processingDelayMs);
 
         boolean approved = Math.random() > failureRate;
         Merchant merchant = merchants.findById(payment.getMerchantId()).orElse(null);
 
+        // ---- ANTIFRAUDE (todas as regras anotadas com @AntiFraud) ----
         boolean fraud = registry.getFraudRules().stream()
                 .anyMatch(rule -> rule.isFraud(payment, merchant));
 
@@ -115,8 +122,11 @@ public class PaymentService {
         payment.setUpdatedAt(Instant.now());
         payments.save(payment);
 
+        // ---- ENVIA WEBHOOK ----
         sendWebhookAsync(payment);
     }
+
+    // 3. BUSCA DE PAGAMENTO (GET /payments/{id})
 
     public PaymentResponse getPayment(String id) {
         return payments.findById(id)
@@ -124,6 +134,7 @@ public class PaymentService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
     }
 
+    // 4. REEMBOLSO (POST /refunds)
     public Map<String, Object> refund(String authHeader, String paymentId) {
         Merchant merchant = merchantFromAuth(authHeader);
         Payment p = payments.findById(paymentId)
@@ -145,6 +156,9 @@ public class PaymentService {
         );
     }
 
+    // ==============================================================
+    // 5. AUTENTICAÇÃO FAKE (Bearer FAKE-<id>)
+    // ==============================================================
     private Merchant merchantFromAuth(String auth) {
         if (auth == null || !auth.startsWith("Bearer FAKE-")) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
@@ -160,6 +174,8 @@ public class PaymentService {
                 .filter(m -> m.getStatus() == Merchant.Status.ACTIVE)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED));
     }
+
+    // 6. WEBHOOK (envio + retry exponencial usando webhookExecutor)
 
     private void sendWebhookAsync(Payment p) {
         webhookExecutor.execute(() -> sendWebhook(p));
@@ -188,6 +204,7 @@ public class PaymentService {
                 .lastAttemptAt(null)
                 .build());
 
+        // Primeiro envio (e retries) também no pool de webhooks
         webhookExecutor.execute(() -> tryDeliver(delivery.getId()));
     }
 
@@ -213,8 +230,7 @@ public class PaymentService {
             deliveries.save(d);
 
             if (!d.isDelivered() && d.getAttempts() < 5) {
-                Thread.sleep(1000L * d.getAttempts());
-
+                Thread.sleep(1000L * d.getAttempts()); // back-off exponencial
                 webhookExecutor.execute(() -> tryDeliver(deliveryId));
             }
         } catch (Exception e) {
@@ -229,7 +245,7 @@ public class PaymentService {
             }
         }
     }
-
+    // 7. UTILS
     private String buildPayload(Payment p) {
         try {
             Map<String, Object> data = Map.of(
@@ -278,7 +294,3 @@ public class PaymentService {
         }
     }
 }
-
-
-
-
